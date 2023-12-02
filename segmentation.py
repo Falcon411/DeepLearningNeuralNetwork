@@ -12,6 +12,7 @@ from keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
 from keras.layers import Activation, BatchNormalization, Conv2D, Conv2DTranspose, MaxPooling2D, concatenate
 from keras.models import Model
 from segmentation_models import Unet
+
 from skimage import io
 
 from keras.preprocessing.image import ImageDataGenerator
@@ -32,7 +33,6 @@ fix_gpu()
 
 EPOCHS = 128
 BATCH_SIZE = 16
-learning_rate = 1e-4
 width = height = 256
 
 train_files = []
@@ -48,74 +48,13 @@ data_MRI = pd.DataFrame(data={"изображение": train_files, 'маска
 train, test = train_test_split(data_MRI, test_size=0.2)
 train, val = train_test_split(train, test_size=0.3)
 
-'''
-train_datagen = ImageDataGenerator(rescale=1. / 255.,
-                                   rotation_range=180,
-                                   width_shift_range=0.3,
-                                   height_shift_range=0.3,
-                                   horizontal_flip=True,
-                                   vertical_flip=True,
-                                   validation_split=0.3)
-
-train_generator = train_datagen.flow_from_dataframe(train,
-                                                    directory='./',
-                                                    x_col='изображение',
-                                                    y_col='маска',
-                                                    subset='training',
-                                                    class_mode='categorical',
-                                                    batch_size=16,
-                                                    shuffle=True,
-                                                    target_size=(256, 256))
-
-valid_generator = train_datagen.flow_from_dataframe(train,
-                                                    directory='./',
-                                                    x_col='изображение',
-                                                    y_col='маска',
-                                                    subset='validation',
-                                                    class_mode='categorical',
-                                                    batch_size=16,
-                                                    shuffle=True,
-                                                    target_size=(256, 256))
-
-test_datagen = ImageDataGenerator(rescale=1. / 255.,
-                                  rotation_range=180,
-                                  width_shift_range=0.3,
-                                  height_shift_range=0.3,
-                                  horizontal_flip=True,
-                                  vertical_flip=True)
-
-test_generator = test_datagen.flow_from_dataframe(test,
-                                                  directory='./',
-                                                  x_col='изображение',
-                                                  y_col='маска',
-                                                  class_mode='categorical',
-                                                  batch_size=16,
-                                                  shuffle=False,
-                                                  target_size=(256, 256))
-
-
-print('Тренировочные данные: ', train_generator.n)
-print('Проверочные данные: ', valid_generator.n)
-print('Тестовые данные: ', test_generator.n)
-
-train_image = list(train_generator.image_path)
-train_mask = list(train_generator.mask_path)
-
-val_image = list(valid_generator.image_path)
-val_mask = list(valid_generator.mask_path)
-
-test_image = list(test_generator)
-test_mask = list(test_generator.mask_path)
-'''
-
-
 def data_generator(data_frame, batch_size, aug_params,
                    image_color_mode="rgb",
                    mask_color_mode="grayscale",
                    image_save_prefix="image",
                    mask_save_prefix="mask",
                    save_to_dir=None,
-                   target_size=(256, 256),
+                   target_size=(height, width),
                    seed=1):
     image_datagen = ImageDataGenerator(**aug_params)
     mask_datagen = ImageDataGenerator(**aug_params)
@@ -279,7 +218,7 @@ test_generator = data_generator(test, BATCH_SIZE,
                                 dict(),
                                 target_size=(height, width))
 
-# unet = Unet('resnet34', input_shape=(height, width, 3), encoder_weights='imagenet')
+#unet = segmentation_models.Unet('resnet34', input_shape=(height, width, 3), encoder_weights='imagenet')
 
 unet = unet(input_size=(height, width, 3))
 
@@ -293,16 +232,17 @@ unet_checkpointer = ModelCheckpoint(filepath="unet-weights.hdf5",
                                     save_best_only=True)
 
 unet_reduce_lr = ReduceLROnPlateau(monitor='val_loss',
+                                   factor=0.1,
                                    mode='min',
                                    verbose=1,
                                    patience=10,
-                                   min_delta=0.0001,
-                                   factor=0.2)
+                                   min_delta=1e-4,
+                                   min_lr=1e-6)
 
 unet_callbacks = [unet_checkpointer, unet_earlystopping, unet_reduce_lr]
 
 unet.compile(optimizer='adam', loss=focal_tversky, metrics=[tversky])
-'''
+
 unet_history = unet.fit(train_generator,
                         steps_per_epoch=len(train) // BATCH_SIZE,
                         epochs=EPOCHS,
@@ -328,9 +268,8 @@ plt.xlabel("Epochs")
 plt.legend(['train', 'val'])
 
 plt.savefig('Unet.png')
-'''
 
-unet.load_weights('unet-weights.hdf5')
+#unet.load_weights('unet-weights.hdf5')
 
 loss, accuracy = unet.evaluate(test_generator,
                                batch_size=BATCH_SIZE,
@@ -363,7 +302,7 @@ for i in range(5):
 
 
 class DataGenerator(Sequence):
-    def __init__(self, ids, mask, image_dir='./', batch_size=16, img_h=256, img_w=256, shuffle=True):
+    def __init__(self, ids, mask, image_dir='./', batch_size=BATCH_SIZE, img_h=height, img_w=width, shuffle=True):
 
         self.ids = ids
         self.mask = mask

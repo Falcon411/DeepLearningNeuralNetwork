@@ -31,6 +31,10 @@ def fix_gpu():
 
 fix_gpu()
 
+EPOCHS = 128
+BATCH_SIZE = 16
+width = height = 256
+
 data_map = []
 
 BASE_LEN = END_IMG_LEN = END_MASK_LEN = 0
@@ -149,12 +153,14 @@ plt.close(figure)
 data_MRI_model = data_MRI.drop(columns=['пациент'])
 data_MRI_model['заболевание'] = data_MRI_model['заболевание'].apply(lambda x: str(x))
 
-train, test = train_test_split(data_MRI_model, test_size=0.3)
+train, test = train_test_split(data_MRI_model, test_size=0.2)
 
 datagen = ImageDataGenerator(rescale=1. / 255.,
-                             rotation_range=180,
-                             width_shift_range=0.3,
-                             height_shift_range=0.3,
+                             rotation_range=45,
+                             width_shift_range=0.05,
+                             height_shift_range=0.05,
+                             shear_range=0.05,
+                             zoom_range=0.05,
                              horizontal_flip=True,
                              vertical_flip=True,
                              validation_split=0.3)
@@ -165,9 +171,9 @@ train_generator = datagen.flow_from_dataframe(train,
                                               y_col='заболевание',
                                               subset='training',
                                               class_mode='categorical',
-                                              batch_size=16,
+                                              batch_size=BATCH_SIZE,
                                               shuffle=True,
-                                              target_size=(256, 256))
+                                              target_size=(height, width))
 
 valid_generator = datagen.flow_from_dataframe(train,
                                               directory='./',
@@ -175,14 +181,16 @@ valid_generator = datagen.flow_from_dataframe(train,
                                               y_col='заболевание',
                                               subset='validation',
                                               class_mode='categorical',
-                                              batch_size=16,
+                                              batch_size=BATCH_SIZE,
                                               shuffle=True,
-                                              target_size=(256, 256))
+                                              target_size=(height, width))
 
 test_datagen = ImageDataGenerator(rescale=1. / 255.,
-                                  rotation_range=180,
-                                  width_shift_range=0.3,
-                                  height_shift_range=0.3,
+                                  rotation_range=45,
+                                  width_shift_range=0.05,
+                                  height_shift_range=0.05,
+                                  shear_range=0.05,
+                                  zoom_range=0.05,
                                   horizontal_flip=True,
                                   vertical_flip=True)
 
@@ -191,12 +199,12 @@ test_generator = test_datagen.flow_from_dataframe(test,
                                                   x_col='изображение',
                                                   y_col='заболевание',
                                                   class_mode='categorical',
-                                                  batch_size=16,
+                                                  batch_size=BATCH_SIZE,
                                                   shuffle=False,
-                                                  target_size=(256, 256))
+                                                  target_size=(height, width))
 
 # Модель ResNet152V2
-resnet = ResNet152V2(weights='imagenet', include_top=False, input_tensor=Input(shape=(256, 256, 3)))
+resnet = ResNet152V2(weights='imagenet', include_top=False, input_tensor=Input(shape=(height, width, 3)))
 
 for layer in resnet.layers:
     layer.trainable = False
@@ -204,8 +212,8 @@ for layer in resnet.layers:
 resnet_model = resnet.output
 resnet_model = GlobalAveragePooling2D()(resnet_model)
 resnet_model = Flatten(name='Flatten')(resnet_model)
-resnet_model = Dense(256, activation='relu')(resnet_model)
-resnet_model = Dropout(0.3)(resnet_model)
+resnet_model = Dense(64, activation='relu')(resnet_model)
+resnet_model = Dense(128, activation='relu')(resnet_model)
 resnet_model = Dense(256, activation='relu')(resnet_model)
 resnet_model = Dropout(0.3)(resnet_model)
 resnet_model = Dense(2, activation='softmax')(resnet_model)
@@ -227,20 +235,21 @@ resnet_checkpointer = ModelCheckpoint(filepath="resnet152v2-weights.hdf5",
                                       save_best_only=True)
 
 resnet_reduce_lr = ReduceLROnPlateau(monitor='val_loss',
+                                     factor=0.1,
                                      mode='min',
                                      verbose=1,
                                      patience=10,
-                                     min_delta=0.0001,
-                                     factor=0.2)
+                                     min_delta=1e-4,
+                                     min_lr=1e-6)
 
 resnet_callbacks = [resnet_checkpointer, resnet_earlystopping, resnet_reduce_lr]
 
 resnet_history = resnet.fit(train_generator,
                             steps_per_epoch=train_generator.n // train_generator.batch_size,
-                            epochs=100,
+                            epochs=EPOCHS,
                             validation_data=valid_generator,
                             validation_steps=valid_generator.n // valid_generator.batch_size,
-                            callbacks=[resnet_checkpointer, resnet_earlystopping])
+                            callbacks=resnet_callbacks)
 
 plt.figure(figsize=(12, 5))
 
@@ -269,18 +278,26 @@ print("ResNet152V2 test accuracy : {} %".format(resnet_accuracy * 100))
 resnet_prediction = resnet.predict(test_generator)
 
 resnet_argmax = np.argmax(resnet_prediction, axis=1)
-original = np.asarray(test['заболевание']).astype('int')
+resnet_original = np.asarray(test['заболевание']).astype('int')
 
-resnet_accuracy_score = accuracy_score(original, resnet_argmax)
+resnet_accuracy_score = accuracy_score(resnet_original, resnet_argmax)
 print("ResNet152V2 test accuracy score : {} %".format(resnet_accuracy_score * 100))
 
-cm = confusion_matrix(original, resnet_argmax)
+resnet_report = classification_report(resnet_original, resnet_argmax, labels=[0, 1])
+print("ResNet152V2 classification report:")
+print(resnet_report)
 
-report = classification_report(original, resnet_argmax, labels=[0, 1])
-print("ResNet152V2 confusion matrix", report)
+resnet_cm = confusion_matrix(resnet_original, resnet_argmax)
+
+print('ResNet152V2 confusion matrix:')
+print('True Positive:', resnet_cm[0][0])
+print('False Negative:', resnet_cm[0][1])
+print('False Positive:', resnet_cm[1][0])
+print('True Negative:', resnet_cm[1][1])
 
 plt.figure(figsize=(5, 5))
-sns.heatmap(cm, annot=True)
+sns.heatmap(resnet_cm, annot=True)
+plt.title('ResNet152V2 confusion matrix')
 plt.savefig("ResNet152V2_confusion_matrix.png")
 
 # Модель VGG19
@@ -292,8 +309,8 @@ for layer in vgg19.layers:
 vgg19_model = vgg19.output
 vgg19_model = GlobalAveragePooling2D()(vgg19_model)
 vgg19_model = Flatten(name='Flatten')(vgg19_model)
-vgg19_model = Dense(256, activation='relu')(vgg19_model)
-vgg19_model = Dropout(0.3)(vgg19_model)
+vgg19_model = Dense(64, activation='relu')(vgg19_model)
+vgg19_model = Dense(128, activation='relu')(vgg19_model)
 vgg19_model = Dense(256, activation='relu')(vgg19_model)
 vgg19_model = Dropout(0.3)(vgg19_model)
 vgg19_model = Dense(2, activation='softmax')(vgg19_model)
@@ -310,25 +327,26 @@ vgg19_earlystopping = EarlyStopping(monitor='val_loss',
                                     verbose=1,
                                     patience=15)
 
-vgg19_checkpointer = ModelCheckpoint(filepath="resnet152v2-weights.hdf5",
+vgg19_checkpointer = ModelCheckpoint(filepath="vgg19-weights.hdf5",
                                      verbose=1,
                                      save_best_only=True)
 
 vgg19_reduce_lr = ReduceLROnPlateau(monitor='val_loss',
+                                    factor=0.1,
                                     mode='min',
                                     verbose=1,
                                     patience=10,
-                                    min_delta=0.0001,
-                                    factor=0.2)
+                                    min_delta=1e-4,
+                                    min_lr=1e-6)
 
-xception_callbacks = [vgg19_checkpointer, vgg19_earlystopping, vgg19_reduce_lr]
+vgg19_callbacks = [vgg19_checkpointer, vgg19_earlystopping, vgg19_reduce_lr]
 
 vgg19_history = vgg19.fit(train_generator,
                           steps_per_epoch=train_generator.n // train_generator.batch_size,
-                          epochs=100,
+                          epochs=EPOCHS,
                           validation_data=valid_generator,
                           validation_steps=valid_generator.n // valid_generator.batch_size,
-                          callbacks=[vgg19_checkpointer, vgg19_earlystopping])
+                          callbacks=vgg19_callbacks)
 
 plt.figure(figsize=(12, 5))
 
@@ -365,10 +383,18 @@ print("VGG19 test accuracy score : {} %".format(vgg19_accuracy_score * 100))
 vgg19_cm = confusion_matrix(vgg19_original, vgg19_argmax)
 
 vgg19_report = classification_report(vgg19_original, vgg19_argmax, labels=[0, 1])
-print("VGG19 confusion matrix", vgg19_report)
+print("VGG19 classification report:")
+print(vgg19_report)
+
+print('VGG19 confusion matrix:')
+print('True Positive:', vgg19_cm[0][0])
+print('False Negative:', vgg19_cm[0][1])
+print('False Positive:', vgg19_cm[1][0])
+print('True Negative:', vgg19_cm[1][1])
 
 plt.figure(figsize=(5, 5))
-sns.heatmap(cm, annot=True)
+sns.heatmap(vgg19_cm, annot=True)
+plt.title("VGG19 confusion matrix")
 plt.savefig("VGG19_confusion_matrix.png")
 
 # Модель VGG19
@@ -380,8 +406,8 @@ for layer in xception.layers:
 xception_model = xception.output
 xception_model = GlobalAveragePooling2D()(xception_model)
 xception_model = Flatten(name='Flatten')(xception_model)
-xception_model = Dense(256, activation='relu')(xception_model)
-xception_model = Dropout(0.3)(xception_model)
+xception_model = Dense(64, activation='relu')(xception_model)
+xception_model = Dense(128, activation='relu')(xception_model)
 xception_model = Dense(256, activation='relu')(xception_model)
 xception_model = Dropout(0.3)(xception_model)
 xception_model = Dense(2, activation='softmax')(xception_model)
@@ -398,25 +424,26 @@ xception_earlystopping = EarlyStopping(monitor='val_loss',
                                        verbose=1,
                                        patience=15)
 
-xception_checkpointer = ModelCheckpoint(filepath="resnet152v2-weights.hdf5",
+xception_checkpointer = ModelCheckpoint(filepath="xception-weights.hdf5",
                                         verbose=1,
                                         save_best_only=True)
 
 xception_reduce_lr = ReduceLROnPlateau(monitor='val_loss',
+                                       factor=0.1,
                                        mode='min',
                                        verbose=1,
                                        patience=10,
-                                       min_delta=0.0001,
-                                       factor=0.2)
+                                       min_delta=1e-4,
+                                       min_lr=1e-6)
 
 xception_callbacks = [xception_checkpointer, xception_earlystopping, xception_reduce_lr]
 
 xception_history = xception.fit(train_generator,
                                 steps_per_epoch=train_generator.n // train_generator.batch_size,
-                                epochs=100,
+                                epochs=EPOCHS,
                                 validation_data=valid_generator,
                                 validation_steps=valid_generator.n // valid_generator.batch_size,
-                                callbacks=[xception_checkpointer, xception_earlystopping])
+                                callbacks=xception_callbacks)
 
 plt.figure(figsize=(12, 5))
 
@@ -453,8 +480,16 @@ print("Xception test accuracy score : {} %".format(xception_accuracy_score * 100
 xception_cm = confusion_matrix(xception_original, xception_argmax)
 
 xception_report = classification_report(xception_original, xception_argmax, labels=[0, 1])
-print("Xception confusion matrix", xception_report)
+print("Xception classification report:")
+print(xception_report)
+
+print('Xception confusion matrix:')
+print('True Positive:', xception_cm[0][0])
+print('False Negative:', xception_cm[0][1])
+print('False Positive:', xception_cm[1][0])
+print('True Negative:', xception_cm[1][1])
 
 plt.figure(figsize=(5, 5))
-sns.heatmap(cm, annot=True)
+sns.heatmap(xception_cm, annot=True)
+plt.title("Xception confusion matrix")
 plt.savefig("Xception_confusion_matrix.png")
